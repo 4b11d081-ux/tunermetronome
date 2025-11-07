@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎶 管樂器調音器與節拍器</title>
+<style>
+  body {
+    background-color: #111;
+    color: #fff;
+    font-family: "Segoe UI", sans-serif;
+    text-align: center;
+    padding: 20px;
+  }
+  .box {
+    background: #222;
+    border-radius: 10px;
+    padding: 20px;
+    margin: 15px auto;
+    width: 320px;
+    box-shadow: 0 0 10px #000;
+  }
+  h1 { font-size: 24px; margin-bottom: 15px; }
+  h2 { font-size: 20px; margin-bottom: 10px; }
+  button {
+    background: #0078ff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-size: 16px;
+    margin: 5px;
+  }
+  button:hover { background: #3399ff; }
+  .note {
+    font-size: 40px;
+    font-weight: bold;
+    margin: 10px 0;
+  }
+  .detune {
+    font-size: 18px;
+    color: #ccc;
+  }
+</style>
+</head>
+<body>
+  <h1>🎶 管樂器調音器與節拍器</h1>
+
+  <div class="box" id="tuner">
+    <h2>🎺 調音器</h2>
+    <p id="pitch">音高：-- Hz</p>
+    <div class="note" id="note">--</div>
+    <div class="detune" id="detune">調整：--</div>
+    <p style="font-size: 14px;">請允許使用麥克風以開始偵測音高</p>
+  </div>
+
+  <div class="box" id="metronome">
+    <h2>🥁 節拍器</h2>
+    <div>
+      <button id="minus">−</button>
+      <span id="bpm" style="font-size:22px;">100 BPM</span>
+      <button id="plus">＋</button>
+    </div>
+    <button id="toggle">開始</button>
+  </div>
+
+<script>
+// === 🎵 調音器功能 ===
+function autoCorrelate(buf, sampleRate) {
+  let SIZE = buf.length;
+  let rms = 0;
+  for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
+  rms = Math.sqrt(rms / SIZE);
+  if (rms < 0.01) return -1;
+
+  let r1 = 0, r2 = SIZE - 1, thres = 0.2;
+  for (let i = 0; i < SIZE / 2; i++) if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+  for (let i = 1; i < SIZE / 2; i++) if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+  buf = buf.slice(r1, r2);
+  SIZE = buf.length;
+
+  let c = new Array(SIZE).fill(0);
+  for (let i = 0; i < SIZE; i++)
+    for (let j = 0; j < SIZE - i; j++)
+      c[i] += buf[j] * buf[j + i];
+
+  let d = 0;
+  while (c[d] > c[d + 1]) d++;
+  let maxval = -1, maxpos = -1;
+  for (let i = d; i < SIZE; i++) {
+    if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+  }
+  let T0 = maxpos;
+  return sampleRate / T0;
+}
+
+function noteFromPitch(frequency) {
+  const noteNum = 12 * (Math.log(frequency / 440) / Math.log(2));
+  return Math.round(noteNum) + 69;
+}
+
+function frequencyFromNoteNumber(note) {
+  return 440 * Math.pow(2, (note - 69) / 12);
+}
+
+function getNoteName(note) {
+  const noteStrings = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  return noteStrings[note % 12];
+}
+
+async function startTuner() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = audioCtx.createAnalyser();
+    const source = audioCtx.createMediaStreamSource(stream);
+    source.connect(analyser);
+    analyser.fftSize = 2048;
+    const buffer = new Float32Array(analyser.fftSize);
+
+    const pitchElem = document.getElementById("pitch");
+    const noteElem = document.getElementById("note");
+    const detuneElem = document.getElementById("detune");
+
+    function updatePitch() {
+      analyser.getFloatTimeDomainData(buffer);
+      const freq = autoCorrelate(buffer, audioCtx.sampleRate);
+      if (freq !== -1 && freq < 2000) {
+        const noteNum = noteFromPitch(freq);
+        const noteName = getNoteName(noteNum);
+        const detuneCents = 1200 * Math.log(freq / frequencyFromNoteNumber(noteNum)) / Math.log(2);
+
+        pitchElem.textContent = `音高：${freq.toFixed(2)} Hz`;
+        noteElem.textContent = noteName;
+        detuneElem.textContent = `調整：${detuneCents.toFixed(1)} cents ${detuneCents > 0 ? "↑" : "↓"}`;
+      }
+      requestAnimationFrame(updatePitch);
+    }
+    updatePitch();
+  } catch (err) {
+    console.error("麥克風權限被拒絕:", err);
+  }
+}
+startTuner();
+
+// === 🥁 節拍器功能 ===
+let bpm = 100;
+let isPlaying = false;
+let intervalId = null;
+let audioCtx = null;
+
+function playClick() {
+  if (!audioCtx) audioCtx = new AudioContext();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.frequency.value = 1000;
+  gain.gain.setValueAtTime(1, audioCtx.currentTime);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.05);
+}
+
+function toggleMetronome() {
+  const btn = document.getElementById("toggle");
+  if (isPlaying) {
+    clearInterval(intervalId);
+    btn.textContent = "開始";
+    isPlaying = false;
+  } else {
+    playClick();
+    intervalId = setInterval(playClick, (60 / bpm) * 1000);
+    btn.textContent = "停止";
+    isPlaying = true;
+  }
+}
+
+document.getElementById("toggle").addEventListener("click", toggleMetronome);
+document.getElementById("plus").addEventListener("click", () => {
+  bpm = Math.min(240, bpm + 5);
+  document.getElementById("bpm").textContent = bpm + " BPM";
+  if (isPlaying) { clearInterval(intervalId); intervalId = setInterval(playClick, (60 / bpm) * 1000); }
+});
+document.getElementById("minus").addEventListener("click", () => {
+  bpm = Math.max(30, bpm - 5);
+  document.getElementById("bpm").textContent = bpm + " BPM";
+  if (isPlaying) { clearInterval(intervalId); intervalId = setInterval(playClick, (60 / bpm) * 1000); }
+});
+</script>
+</body>
+</html>
